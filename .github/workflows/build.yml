@@ -1,0 +1,142 @@
+name: clang-build-ext
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+jobs:
+  build-primary:
+    runs-on: ${{ matrix.os }}
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+        python-version:
+          - '3.12'
+          - '3.11'
+          - '3.10'
+          - '3.9'
+          - '3.8'
+        setuptools-version:
+          - '68.0'
+          - '67.0'
+          - '66.0'
+    env:
+      DEPLOY_PYTHONS: "3.11"
+      DEPLOY_OSES: "Linux"
+      DEPLOY_SETUPTOOLS: "68.0"
+      TWINE_USERNAME: __token__
+      TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v3
+      - shell: bash
+        run: |
+          echo "PYB_EXTRA_ARGS=--no-venvs" >> $GITHUB_ENV
+          echo "SETUPTOOLS_VER=~=${{matrix.setuptools-version}}" >> $GITHUB_ENV
+
+      - shell: bash
+        if: |
+          github.event_name == 'push' &&
+          contains(env.DEPLOY_OSES, runner.os) &&
+          contains(env.DEPLOY_PYTHONS, matrix.python-version) &&
+          contains(env.DEPLOY_SETUPTOOLS, matrix.setuptools-version)
+
+        run: |
+          echo "PYB_EXTRA_ARGS=+upload --no-venvs" >> $GITHUB_ENV
+
+      - uses: pybuilder/build@master
+        with:
+          checkout: false
+          with-venv: false
+          python-version: ${{ matrix.python-version }}
+          pyb-extra-args: ${{ env.PYB_EXTRA_ARGS }}
+          pre-build: |
+            $PYTHON -m pip install karellen-llvm-clang[tools]
+            $PYTHON -c pass
+
+  build-secondary:
+    runs-on: ${{ matrix.os }}
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+        python-version:
+          - '3.7'
+        setuptools-version:
+          - '67.0'
+          - '66.0'
+          - '65.0'
+          - '64.0'
+          - '63.0'
+          - '62.0'
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v3
+      - shell: bash
+        run: |
+          echo "PYB_EXTRA_ARGS=--no-venvs" >> $GITHUB_ENV
+          echo "SETUPTOOLS_VER=~=${{matrix.setuptools-version}}" >> $GITHUB_ENV
+
+      - uses: pybuilder/build@master
+        with:
+          checkout: false
+          with-venv: false
+          python-version: ${{ matrix.python-version }}
+          pyb-extra-args: ${{ env.PYB_EXTRA_ARGS }}
+          pre-build: |
+            $PYTHON -m pip install karellen-llvm-clang[tools]
+            $PYTHON -c pass
+
+  build-experimental:
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+        python-version:
+          - '3.13-dev'
+        setuptools-version:
+          - '68.0'
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v3
+      - shell: bash
+        run: |
+          echo "PYB_EXTRA_ARGS=--no-venvs" >> $GITHUB_ENV
+          echo "SETUPTOOLS_VER=~=${{matrix.setuptools-version}}" >> $GITHUB_ENV
+
+      - uses: pybuilder/build@master
+        with:
+          checkout: false
+          with-venv: false
+          python-version: ${{ matrix.python-version }}
+          pyb-extra-args: ${{ env.PYB_EXTRA_ARGS }}
+          pre-build: |
+            $PYTHON -m pip install karellen-llvm-clang[tools]
+            $PYTHON -c pass
+
+  build-summary:
+    if: success() || failure()
+    runs-on: ubuntu-latest
+    name: Build Summary
+    needs:
+      - build-primary
+      - build-secondary
+      - build-experimental
+    steps:
+      - name: Check build matrix status
+        if: |
+          needs.build-primary.result != 'success' ||
+          needs.build-secondary.result != 'success'
+        run: exit 1
