@@ -30,7 +30,7 @@ use_plugin("copy_resources")
 use_plugin("filter_resources")
 
 name = "clang_build_ext"
-version = "0.0.1.dev"
+version = "0.0.1"
 
 summary = "Clang-based extension builder"
 authors = [Author("Karellen, Inc.", "supervisor@karellen.co")]
