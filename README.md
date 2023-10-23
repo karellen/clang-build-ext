@@ -18,14 +18,16 @@ Beyond compiler the additional functionality is currently undocumented.
 
 ## How to Use
 
-Add the followi 
+Add the following to the `setup.py` script:
+
 ```python 
+from setuptools import setup
 from karellen.clang_build_ext import ClangBuildExt, ClangBuildClib
 
 ...
 
 setup(
-... 
+..., 
 cmdclass={"build_ext": ClangBuildExt,
           "build_clib": ClangBuildClib},)
 )
