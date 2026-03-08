@@ -15,6 +15,7 @@
 # limitations under the License.
 #
 
+import inspect
 import os
 import subprocess
 import sys
@@ -32,6 +33,8 @@ from tempfile import TemporaryDirectory
 
 from setuptools.command.build_clib import build_clib as _build_clib
 from setuptools.command.build_ext import build_ext as _build_ext
+
+_has_dry_run = 'dry_run' in inspect.signature(ccompiler.new_compiler).parameters
 
 COMMON_OPTIONS = [
     ("drakon", "d",
@@ -51,8 +54,11 @@ class ClangCCompiler(UnixCCompiler):
         'compiler': ["clang"],
         'compiler_so': ["clang"],
         'compiler_cxx': ["clang-cpp"],
+        'compiler_so_cxx': ["clang-cpp"],
         'linker_so': ["clang", "-shared", "-fuse-ld=lld"],
+        'linker_so_cxx': ["clang-cpp", "-shared", "-fuse-ld=lld"],
         'linker_exe': ["clang", "-fuse-ld=lld"],
+        'linker_exe_cxx': ["clang-cpp", "-fuse-ld=lld"],
         'archiver': ["llvm-ar", "rcs"],
         'ranlib': None,
         'objcopy': ["llvm-objcopy"],
@@ -62,7 +68,10 @@ class ClangCCompiler(UnixCCompiler):
     def __init__(self, verbose=0, dry_run=0, force=0, drakon=False, thin=False):
         self.drakon = drakon
         self.thin = thin
-        super().__init__(verbose, dry_run, force)
+        if _has_dry_run:
+            super().__init__(verbose, dry_run, force)
+        else:
+            super().__init__(verbose, force)
         self.verbose = verbose or False
 
     def link(
@@ -300,8 +309,14 @@ class ClangBuildExt(_build_ext):
 
     def new_compiler(self, plat=None, compiler=None, verbose=0, dry_run=0, force=0):
         if compiler == "clang":
-            return ClangCCompiler(None, dry_run, force, drakon=self.drakon, thin=self.thin)
-        return self._old_new_compiler(plat, compiler, verbose, dry_run, force)
+            if _has_dry_run:
+                return ClangCCompiler(None, dry_run, force, drakon=self.drakon, thin=self.thin)
+            else:
+                return ClangCCompiler(None, force, drakon=self.drakon, thin=self.thin)
+        if _has_dry_run:
+            return self._old_new_compiler(plat, compiler, verbose, dry_run, force)
+        else:
+            return self._old_new_compiler(plat, compiler, verbose, force)
 
     @contextmanager
     def customized_compiler(self):
@@ -311,11 +326,18 @@ class ClangBuildExt(_build_ext):
         _old_build_ext_new_compiler = build_ext.new_compiler
         build_ext.new_compiler = self.new_compiler
 
+        from distutils.command import build_ext as _d_build_ext
+        _old_d_build_ext_new_compiler = getattr(_d_build_ext, 'new_compiler', None)
+        if _old_d_build_ext_new_compiler is not None:
+            _d_build_ext.new_compiler = self.new_compiler
+
         try:
             yield
         finally:
             ccompiler.new_compiler = _old_new_compiler
             build_ext.new_compiler = _old_build_ext_new_compiler
+            if _old_d_build_ext_new_compiler is not None:
+                _d_build_ext.new_compiler = _old_d_build_ext_new_compiler
 
 
 class ClangBuildClib(_build_clib):
@@ -340,18 +362,32 @@ class ClangBuildClib(_build_clib):
 
     def new_compiler(self, plat=None, compiler=None, verbose=0, dry_run=0, force=0):
         if compiler == "clang":
-            return ClangCCompiler(None, dry_run, force, drakon=self.drakon, thin=self.thin)
-        return self._old_new_compiler(plat, compiler, verbose, dry_run, force)
+            if _has_dry_run:
+                return ClangCCompiler(None, dry_run, force, drakon=self.drakon, thin=self.thin)
+            else:
+                return ClangCCompiler(None, force, drakon=self.drakon, thin=self.thin)
+        if _has_dry_run:
+            return self._old_new_compiler(plat, compiler, verbose, dry_run, force)
+        else:
+            return self._old_new_compiler(plat, compiler, verbose, force)
 
     @contextmanager
     def customized_compiler(self):
         from distutils import ccompiler
         self._old_new_compiler = _old_new_compiler = ccompiler.new_compiler
         ccompiler.new_compiler = self.new_compiler
+
+        from distutils.command import build_clib as _d_build_clib
+        _old_d_build_clib_new_compiler = getattr(_d_build_clib, 'new_compiler', None)
+        if _old_d_build_clib_new_compiler is not None:
+            _d_build_clib.new_compiler = self.new_compiler
+
         try:
             yield
         finally:
             ccompiler.new_compiler = _old_new_compiler
+            if _old_d_build_clib_new_compiler is not None:
+                _d_build_clib.new_compiler = _old_d_build_clib_new_compiler
 
     def run(self):
         with self.customized_compiler():
