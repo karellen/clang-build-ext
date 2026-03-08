@@ -8,6 +8,8 @@ on:
       - master
 jobs:
   build-primary:
+    permissions:
+      contents: write
     runs-on: ${{ matrix.os }}
     continue-on-error: false
     strategy:
@@ -33,21 +35,11 @@ jobs:
       TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - shell: bash
         run: |
           echo "PYB_EXTRA_ARGS=--no-venvs" >> $GITHUB_ENV
           echo "SETUPTOOLS_VER=~=${{matrix.setuptools-version}}" >> $GITHUB_ENV
-
-      - shell: bash
-        if: |
-          github.event_name == 'push' &&
-          contains(env.DEPLOY_OSES, runner.os) &&
-          contains(env.DEPLOY_PYTHONS, matrix.python-version) &&
-          contains(env.DEPLOY_SETUPTOOLS, matrix.setuptools-version)
-
-        run: |
-          echo "PYB_EXTRA_ARGS=+upload --no-venvs" >> $GITHUB_ENV
 
       - uses: pybuilder/build@master
         with:
@@ -55,6 +47,11 @@ jobs:
           with-venv: false
           python-version: ${{ matrix.python-version }}
           pyb-extra-args: ${{ env.PYB_EXTRA_ARGS }}
+          is-upload: >-
+            ${{ github.event_name == 'push'
+            && contains(env.DEPLOY_OSES, runner.os)
+            && contains(env.DEPLOY_PYTHONS, matrix.python-version)
+            && contains(env.DEPLOY_SETUPTOOLS, matrix.setuptools-version) }}
           pre-build: |
             $PYTHON -m pip install karellen-llvm-clang[tools]
             $PYTHON -c pass
@@ -79,7 +76,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - shell: bash
         run: |
           echo "PYB_EXTRA_ARGS=--no-venvs" >> $GITHUB_ENV
@@ -110,7 +107,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - shell: bash
         run: |
           echo "PYB_EXTRA_ARGS=--no-venvs" >> $GITHUB_ENV
