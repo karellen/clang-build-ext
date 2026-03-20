@@ -57,6 +57,8 @@ jobs:
             $PYTHON -m pip install karellen-llvm-clang[tools]
             $PYTHON -c pass
 
+          release-app-id: ${{ secrets.PYBUILDER_RELEASE_APP_ID }}
+          release-app-private-key: ${{ secrets.PYBUILDER_RELEASE_APP_PRIVATE_KEY }}
   build-summary:
     if: success() || failure()
     runs-on: ubuntu-latest
