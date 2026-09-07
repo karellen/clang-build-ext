@@ -60,8 +60,8 @@ The compiler uses the full LLVM toolchain:
 | Tool         | Command                          |
 |--------------|----------------------------------|
 | C compiler   | `clang`                          |
-| C++ compiler | `clang-cpp`                      |
-| Linker       | `clang -fuse-ld=lld` / `clang-cpp -fuse-ld=lld` |
+| C++ compiler | `clang++`                        |
+| Linker       | `clang -fuse-ld=lld` / `clang++ -fuse-ld=lld` |
 | Archiver     | `llvm-ar`                        |
 | Objcopy      | `llvm-objcopy`                   |
 | Readelf      | `llvm-readelf`                   |
@@ -88,6 +88,43 @@ setup(
     },
 )
 ```
+
+Only the `sources` entry is glob-expanded. Every other `build_info` key of a `build_clib`
+library (`macros`, `include_dirs`, `cflags`, `obj_deps`) is passed through to setuptools
+unchanged.
+
+### C++ Extensions
+
+Sources that setuptools detects as C++ (`.cc`, `.cpp`, `.cxx`) are compiled with the
+`clang++` driver, and any extension containing one is linked with it too, so no extra
+configuration is required to mix C and C++ in one project:
+
+```python
+setup(
+    ...,
+    ext_modules=[
+        Extension("myext", ["src/module/*.cpp"],
+                  include_dirs=["include"],
+                  extra_compile_args=["-std=c++20"]),
+    ],
+    libraries=[
+        ("mylib", {"sources": ["src/lib/*.cpp"],
+                   "include_dirs": ["include"],
+                   "macros": [("MYLIB_BUILD", "1")],
+                   "cflags": ["-std=c++20"]}),
+    ],
+    cmdclass={
+        "build_ext": ClangBuildExt,
+        "build_clib": ClangBuildClib,
+    },
+)
+```
+
+Note that `clang++` links against `libc++` rather than `libstdc++`. When the toolchain comes
+from `karellen-llvm-clang`, `libc++.so.1` lives in the package's library directory and is
+recorded as a plain `DT_NEEDED`, so the resulting extension needs that directory on the
+loader path (`LD_LIBRARY_PATH`, an `ld.so.conf` entry, or an explicit `-Wl,-rpath` in
+`extra_link_args`) at import time.
 
 ### Drakon Enhancements
 
