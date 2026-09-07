@@ -54,7 +54,7 @@ jobs:
             && contains(env.DEPLOY_PYTHONS, matrix.python-version)
             && contains(env.DEPLOY_SETUPTOOLS, matrix.setuptools-version) }}
           pre-build: |
-            $PYTHON -m pip install karellen-llvm-clang[tools]
+            $PYTHON -m pip install karellen-llvm-clang[tools] build
             $PYTHON -c pass
 
           release-app-id: ${{ secrets.PYBUILDER_RELEASE_APP_ID }}

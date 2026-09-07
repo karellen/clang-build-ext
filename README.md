@@ -23,7 +23,15 @@ and thin static library support.
 
 ## Basic Usage
 
-Add the following to your `setup.py`:
+Add `clang-build-ext` to your build dependencies in `pyproject.toml`:
+
+```toml
+[build-system]
+requires = ["setuptools", "clang-build-ext"]
+build-backend = "setuptools.build_meta"
+```
+
+Register the custom build commands in `setup.py`:
 
 ```python
 from setuptools import setup, Extension
@@ -37,6 +45,12 @@ setup(
         "build_clib": ClangBuildClib,
     },
 )
+```
+
+Then build with:
+
+```shell
+python -m build
 ```
 
 ## LLVM Toolchain
@@ -89,15 +103,16 @@ When enabled, the build:
 3. After linking, extracts `.bc` files from all linked objects and static libraries and embeds
    them into the output binary as `.drakon.<name>` ELF sections (marked `noload,readonly`)
 
-Enable via command line or environment variable:
+Enable via environment variable or `setup.cfg`:
 
 ```shell
-# Command line
-python setup.py build_ext --drakon
-python setup.py build_ext -d
+DRAKON=1 python -m build
+```
 
-# Environment variable
-DRAKON=1 python setup.py build_ext
+```ini
+# setup.cfg
+[build_ext]
+drakon = 1
 ```
 
 ### Thin Static Libraries
@@ -105,21 +120,29 @@ DRAKON=1 python setup.py build_ext
 Thin static libraries store references to object files rather than copies, reducing build
 artifact size during development.
 
-Enable via command line or environment variable:
+Enable via environment variable or `setup.cfg`:
 
 ```shell
-# Command line
-python setup.py build_ext --thin
-python setup.py build_ext -T
+THIN=1 python -m build
+```
 
-# Environment variable
-THIN=1 python setup.py build_ext
+```ini
+# setup.cfg
+[build_ext]
+thin = 1
 ```
 
 Both options can be combined:
 
 ```shell
-python setup.py build_ext --drakon --thin
+DRAKON=1 THIN=1 python -m build
+```
+
+```ini
+# setup.cfg
+[build_ext]
+drakon = 1
+thin = 1
 ```
 
 The `build_clib` command inherits `drakon` and `thin` settings from `build_ext` automatically.
