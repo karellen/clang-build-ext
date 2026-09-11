@@ -23,11 +23,19 @@ jobs:
           - '3.12'
           - '3.11'
           - '3.10'
+        # Each entry sits on one side of an API change that affects this plugin.
+        # See the compatibility table in README.md.
         setuptools-version:
-          - '82.0'
-          - '75.9'
-          - '70.3'
-          - '68.0'
+          - '84.0'
+          - '82.0'     # deploy pin
+          - '81.0.0'   # first without new_compiler(dry_run=)
+          - '80.10.2'  # last with new_compiler(dry_run=)
+          - '75.9'     # new_compiler relocated to distutils.compilers.C.base
+          - '72.2.0'   # first with the C++ executables
+          - '72.1.0'   # last without them
+          - '70.1.0'   # first not requiring wheel
+          - '70.0.0'   # last requiring wheel
+          - '68.0'     # oldest supported
     env:
       DEPLOY_PYTHONS: "3.14"
       DEPLOY_OSES: "Linux"
@@ -54,7 +62,7 @@ jobs:
             && contains(env.DEPLOY_PYTHONS, matrix.python-version)
             && contains(env.DEPLOY_SETUPTOOLS, matrix.setuptools-version) }}
           pre-build: |
-            $PYTHON -m pip install karellen-llvm-clang[tools] build
+            $PYTHON -m pip install karellen-llvm-clang[tools] build wheel
             $PYTHON -c pass
 
           release-app-id: ${{ secrets.PYBUILDER_RELEASE_APP_ID }}

@@ -186,5 +186,12 @@ The `build_clib` command inherits `drakon` and `thin` settings from `build_ext` 
 
 ## Setuptools Compatibility
 
-`clang-build-ext` maintains compatibility across setuptools versions, including the API changes
-in setuptools 75+ (new C++ compiler executables) and 82+ (removal of the `dry_run` parameter).
+`clang-build-ext` supports setuptools 68 and newer, and is tested against the versions on
+either side of each API change that affects it:
+
+| setuptools | Change |
+|------------|--------|
+| 70.1       | `build_meta.get_requires_for_build_wheel` stops requiring `wheel`; earlier versions need it installed for a `--no-isolation` build |
+| 72.2       | `UnixCCompiler` gains the separate C++ executables (`compiler_cxx`, `compiler_so_cxx`, `linker_so_cxx`, `linker_exe_cxx`) |
+| 75.9       | `new_compiler` moves from `distutils.ccompiler` to `distutils.compilers.C.base` |
+| 81.0       | `new_compiler` drops the `dry_run` parameter |
