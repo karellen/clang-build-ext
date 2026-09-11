@@ -23,7 +23,15 @@ and thin static library support.
 
 ## Basic Usage
 
-Add the following to your `setup.py`:
+Add `clang-build-ext` to your build dependencies in `pyproject.toml`:
+
+```toml
+[build-system]
+requires = ["setuptools", "clang-build-ext"]
+build-backend = "setuptools.build_meta"
+```
+
+Register the custom build commands in `setup.py`:
 
 ```python
 from setuptools import setup, Extension
@@ -39,6 +47,12 @@ setup(
 )
 ```
 
+Then build with:
+
+```shell
+python -m build
+```
+
 ## LLVM Toolchain
 
 The compiler uses the full LLVM toolchain:
@@ -46,8 +60,8 @@ The compiler uses the full LLVM toolchain:
 | Tool         | Command                          |
 |--------------|----------------------------------|
 | C compiler   | `clang`                          |
-| C++ compiler | `clang-cpp`                      |
-| Linker       | `clang -fuse-ld=lld` / `clang-cpp -fuse-ld=lld` |
+| C++ compiler | `clang++`                        |
+| Linker       | `clang -fuse-ld=lld` / `clang++ -fuse-ld=lld` |
 | Archiver     | `llvm-ar`                        |
 | Objcopy      | `llvm-objcopy`                   |
 | Readelf      | `llvm-readelf`                   |
@@ -75,6 +89,43 @@ setup(
 )
 ```
 
+Only the `sources` entry is glob-expanded. Every other `build_info` key of a `build_clib`
+library (`macros`, `include_dirs`, `cflags`, `obj_deps`) is passed through to setuptools
+unchanged.
+
+### C++ Extensions
+
+Sources that setuptools detects as C++ (`.cc`, `.cpp`, `.cxx`) are compiled with the
+`clang++` driver, and any extension containing one is linked with it too, so no extra
+configuration is required to mix C and C++ in one project:
+
+```python
+setup(
+    ...,
+    ext_modules=[
+        Extension("myext", ["src/module/*.cpp"],
+                  include_dirs=["include"],
+                  extra_compile_args=["-std=c++20"]),
+    ],
+    libraries=[
+        ("mylib", {"sources": ["src/lib/*.cpp"],
+                   "include_dirs": ["include"],
+                   "macros": [("MYLIB_BUILD", "1")],
+                   "cflags": ["-std=c++20"]}),
+    ],
+    cmdclass={
+        "build_ext": ClangBuildExt,
+        "build_clib": ClangBuildClib,
+    },
+)
+```
+
+Note that `clang++` links against `libc++` rather than `libstdc++`. When the toolchain comes
+from `karellen-llvm-clang`, `libc++.so.1` lives in the package's library directory and is
+recorded as a plain `DT_NEEDED`, so the resulting extension needs that directory on the
+loader path (`LD_LIBRARY_PATH`, an `ld.so.conf` entry, or an explicit `-Wl,-rpath` in
+`extra_link_args`) at import time.
+
 ### Drakon Enhancements
 
 Drakon mode embeds LLVM intermediate representation (IR) bytecode into compiled binaries as
@@ -89,15 +140,16 @@ When enabled, the build:
 3. After linking, extracts `.bc` files from all linked objects and static libraries and embeds
    them into the output binary as `.drakon.<name>` ELF sections (marked `noload,readonly`)
 
-Enable via command line or environment variable:
+Enable via environment variable or `setup.cfg`:
 
 ```shell
-# Command line
-python setup.py build_ext --drakon
-python setup.py build_ext -d
+DRAKON=1 python -m build
+```
 
-# Environment variable
-DRAKON=1 python setup.py build_ext
+```ini
+# setup.cfg
+[build_ext]
+drakon = 1
 ```
 
 ### Thin Static Libraries
@@ -105,26 +157,41 @@ DRAKON=1 python setup.py build_ext
 Thin static libraries store references to object files rather than copies, reducing build
 artifact size during development.
 
-Enable via command line or environment variable:
+Enable via environment variable or `setup.cfg`:
 
 ```shell
-# Command line
-python setup.py build_ext --thin
-python setup.py build_ext -T
+THIN=1 python -m build
+```
 
-# Environment variable
-THIN=1 python setup.py build_ext
+```ini
+# setup.cfg
+[build_ext]
+thin = 1
 ```
 
 Both options can be combined:
 
 ```shell
-python setup.py build_ext --drakon --thin
+DRAKON=1 THIN=1 python -m build
+```
+
+```ini
+# setup.cfg
+[build_ext]
+drakon = 1
+thin = 1
 ```
 
 The `build_clib` command inherits `drakon` and `thin` settings from `build_ext` automatically.
 
 ## Setuptools Compatibility
 
-`clang-build-ext` maintains compatibility across setuptools versions, including the API changes
-in setuptools 75+ (new C++ compiler executables) and 82+ (removal of the `dry_run` parameter).
+`clang-build-ext` supports setuptools 68 and newer, and is tested against the versions on
+either side of each API change that affects it:
+
+| setuptools | Change |
+|------------|--------|
+| 70.1       | `build_meta.get_requires_for_build_wheel` stops requiring `wheel`; earlier versions need it installed for a `--no-isolation` build |
+| 72.2       | `UnixCCompiler` gains the separate C++ executables (`compiler_cxx`, `compiler_so_cxx`, `linker_so_cxx`, `linker_exe_cxx`) |
+| 75.9       | `new_compiler` moves from `distutils.ccompiler` to `distutils.compilers.C.base` |
+| 81.0       | `new_compiler` drops the `dry_run` parameter |

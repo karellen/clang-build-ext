@@ -53,12 +53,12 @@ class ClangCCompiler(UnixCCompiler):
         'preprocessor': ["clang", "-E"],
         'compiler': ["clang"],
         'compiler_so': ["clang"],
-        'compiler_cxx': ["clang-cpp"],
-        'compiler_so_cxx': ["clang-cpp"],
+        'compiler_cxx': ["clang++"],
+        'compiler_so_cxx': ["clang++"],
         'linker_so': ["clang", "-shared", "-fuse-ld=lld"],
-        'linker_so_cxx': ["clang-cpp", "-shared", "-fuse-ld=lld"],
+        'linker_so_cxx': ["clang++", "-shared", "-fuse-ld=lld"],
         'linker_exe': ["clang", "-fuse-ld=lld"],
-        'linker_exe_cxx': ["clang-cpp", "-fuse-ld=lld"],
+        'linker_exe_cxx': ["clang++", "-fuse-ld=lld"],
         'archiver': ["llvm-ar", "rcs"],
         'ranlib': None,
         'objcopy': ["llvm-objcopy"],
@@ -305,7 +305,7 @@ class ClangBuildExt(_build_ext):
                 ext.sources.extend(glob(src))
             super().build_extension(ext)
         finally:
-            ext.source = sources
+            ext.sources = sources
 
     def new_compiler(self, plat=None, compiler=None, verbose=0, dry_run=0, force=0):
         if compiler == "clang":
@@ -395,12 +395,15 @@ class ClangBuildClib(_build_clib):
 
     def build_libraries(self, libraries):
         new_libraries = []
-        for lib_name, sources_map in libraries:
-            sources = sources_map.get("sources")
+        for lib_name, build_info in libraries:
+            sources = build_info.get("sources")
             if sources:
                 new_sources = []
                 for src in sources:
                     new_sources.extend(glob(src))
-                new_libraries.append((lib_name, {"sources": new_sources}))
+                # Only "sources" is glob-expanded: everything else in build_info
+                # (macros, include_dirs, cflags, obj_deps) must be passed through
+                build_info = dict(build_info, sources=new_sources)
+            new_libraries.append((lib_name, build_info))
 
         super().build_libraries(new_libraries)
