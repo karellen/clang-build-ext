@@ -15,11 +15,15 @@
 # limitations under the License.
 #
 
+import io
+import logging
 import os
 import shutil
 import subprocess
 import sys
+import traceback
 import unittest
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from os.path import dirname, join as jp, exists
 from tempfile import TemporaryDirectory
 from sysconfig import get_platform
@@ -46,6 +50,44 @@ class ClangBuildExtTest(unittest.TestCase):
     def build_temp(self):
         return jp(self.src_dir, "build", f"temp.{PLATFORM}")
 
+    @contextmanager
+    def build_context(self, env):
+        """Run a build in this process with `env` applied, capturing everything it emits.
+
+        The build has to happen in-process: driving it through a `python -m build`
+        subprocess puts the plugin in a grandchild that the coverage tracer never
+        sees, which reports every line of karellen.clang_build_ext as unexecuted.
+
+        Output arrives two ways depending on the setuptools version -- older ones
+        write straight to stdout, newer ones log the compiler command lines through
+        the root logger (`_distutils/_log.py` is `logging.getLogger()`) -- so both
+        are funnelled into one buffer.
+        """
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        root_logger = logging.getLogger()
+        old_level = root_logger.level
+        root_logger.addHandler(handler)
+        root_logger.setLevel(logging.DEBUG)
+
+        old_cwd = os.getcwd()
+        old_env = dict(os.environ)
+        old_argv = list(sys.argv)
+        old_path = list(sys.path)
+        try:
+            os.chdir(self.src_dir)
+            os.environ.update(env)
+            with redirect_stdout(output), redirect_stderr(output):
+                yield output
+        finally:
+            root_logger.removeHandler(handler)
+            root_logger.setLevel(old_level)
+            os.chdir(old_cwd)
+            os.environ.clear()
+            os.environ.update(old_env)
+            sys.argv[:] = old_argv
+            sys.path[:] = old_path
+
     def build_test(self, dir_name, setup_cfg=None, **env):
         src_dir = jp(self.test_dir, dir_name)
         shutil.copytree(src_dir, self.src_dir, symlinks=True, ignore_dangling_symlinks=True)
@@ -54,17 +96,22 @@ class ClangBuildExtTest(unittest.TestCase):
             with open(jp(self.src_dir, "setup.cfg"), "w") as f:
                 f.write(setup_cfg)
 
-        cmd = [sys.executable, "-m", "build", "--wheel", "--no-isolation"]
+        wheel_dir = jp(self.target_dir.name, "wheel")
+        os.makedirs(wheel_dir, exist_ok=True)
 
-        full_env = dict(os.environ)
-        full_env.update(env)
+        # Call the PEP 517 hook directly rather than shelling out to a front end:
+        # same entry point and the same env/setup.cfg-only configuration surface,
+        # but it executes where coverage can observe it.
+        from setuptools import build_meta
 
-        result = subprocess.run(cmd, cwd=self.src_dir, env=full_env,
-                                capture_output=True, text=True)
-        if result.returncode != 0:
-            self.fail(f"Build failed:\nstdout: {result.stdout}\nstderr: {result.stderr}")
+        try:
+            with self.build_context(env) as output:
+                build_meta.build_wheel(wheel_dir)
+        except Exception:
+            self.fail(f"Build failed:\n{output.getvalue()}\n"
+                      f"{traceback.format_exc()}")
 
-        return result
+        return output.getvalue()
 
     def assert_bc_files(self, present=True):
         check = self.assertTrue if present else self.assertFalse
@@ -90,9 +137,8 @@ class ClangBuildExtTest(unittest.TestCase):
         check(exists(jp(t, "src", "cxxmodule", "module.bc")))
         check(exists(jp(t, "src", "cxxmodule", "subdir", "module_sub.bc")))
 
-    def assert_cxx_driver(self, result):
+    def assert_cxx_driver(self, output):
         """C++ sources must go through the clang++ driver, never the clang-cpp preprocessor."""
-        output = result.stdout + result.stderr
         self.assertIn("clang++ ", output)
         self.assertNotIn("clang-cpp", output)
 
