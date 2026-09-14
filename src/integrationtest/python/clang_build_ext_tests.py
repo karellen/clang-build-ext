@@ -78,6 +78,22 @@ class ClangBuildExtTest(unittest.TestCase):
         check(exists(jp(t, "src", "module", "module.bc")))
         check(exists(jp(t, "src", "module", "subdir", "module1.bc")))
 
+        check(exists(jp(t, "src", "alib", "deep", "deeper", "alib_deep.bc")))
+        check(exists(jp(t, "src", "shlib", "deep", "deeper", "shlib_deep.bc")))
+        check(exists(jp(t, "src", "module", "deep", "deeper", "module_deep.bc")))
+
+    def assert_deep_sources_compiled(self, *src_dirs_and_stems):
+        """`**` must be arbitrary-depth, not one level.
+
+        Each of these sources lives three directories below its glob root, so it is
+        matched only when glob() runs with recursive=True. Without it `**` collapses
+        to a single `*` and the source is dropped from the build with no error.
+        """
+        t = self.build_temp
+        for src_dir, stem in src_dirs_and_stems:
+            obj = jp(t, "src", src_dir, "deep", "deeper", f"{stem}.o")
+            self.assertTrue(exists(obj), f"{obj} missing: ** did not recurse")
+
     def assert_cxx_bc_files(self, present=True):
         check = self.assertTrue if present else self.assertFalse
         t = self.build_temp
@@ -89,6 +105,10 @@ class ClangBuildExtTest(unittest.TestCase):
 
         check(exists(jp(t, "src", "cxxmodule", "module.bc")))
         check(exists(jp(t, "src", "cxxmodule", "subdir", "module_sub.bc")))
+
+        check(exists(jp(t, "src", "cxxalib", "deep", "deeper", "alib_deep.bc")))
+        check(exists(jp(t, "src", "cxxshlib", "deep", "deeper", "shlib_deep.bc")))
+        check(exists(jp(t, "src", "cxxmodule", "deep", "deeper", "module_deep.bc")))
 
     def assert_cxx_driver(self, result):
         """C++ sources must go through the clang++ driver, never the clang-cpp preprocessor."""
@@ -112,7 +132,7 @@ class ClangBuildExtTest(unittest.TestCase):
         if result.returncode != 0:
             self.fail(f"Importing the built C++ extension failed:\n"
                       f"stdout: {result.stdout}\nstderr: {result.stderr}")
-        self.assertEqual("hello, module", result.stdout.strip())
+        self.assertEqual("hello, module (deep)", result.stdout.strip())
 
     def test_with_env_drakon(self):
         self.build_test("extension_1", DRAKON="1")
@@ -129,6 +149,9 @@ class ClangBuildExtTest(unittest.TestCase):
     def test_with_env_no_drakon_no_thin(self):
         self.build_test("extension_1")
         self.assert_bc_files(present=False)
+        self.assert_deep_sources_compiled(("alib", "alib_deep"),
+                                          ("shlib", "shlib_deep"),
+                                          ("module", "module_deep"))
 
     def test_with_setup_cfg_drakon(self):
         self.build_test("extension_1", setup_cfg="[build_ext]\ndrakon = 1\n")
@@ -150,6 +173,9 @@ class ClangBuildExtTest(unittest.TestCase):
         result = self.build_test("extension_2")
         self.assert_cxx_driver(result)
         self.assert_cxx_bc_files(present=False)
+        self.assert_deep_sources_compiled(("cxxalib", "alib_deep"),
+                                          ("cxxshlib", "shlib_deep"),
+                                          ("cxxmodule", "module_deep"))
         self.assert_cxx_module_works()
 
     def test_cxx_with_env_drakon(self):

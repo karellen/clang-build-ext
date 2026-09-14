@@ -4,8 +4,12 @@
 
 std::string module_greeting();
 
+// Defined three directories down, so a non-recursive ** leaves this undefined
+// and the extension fails to load rather than silently losing a source file.
+std::string module_greeting_deep();
+
 static PyObject *method_test(PyObject *self, PyObject *args) {
-    const std::string greeting = module_greeting();
+    const std::string greeting = module_greeting() + module_greeting_deep();
     return PyUnicode_FromStringAndSize(greeting.data(), greeting.size());
 }
 
