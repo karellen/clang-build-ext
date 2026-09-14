@@ -28,7 +28,7 @@ from distutils.spawn import find_executable
 from distutils.unixccompiler import UnixCCompiler
 from distutils.util import split_quoted
 from glob import glob
-from os.path import exists, dirname, commonpath
+from os.path import exists, dirname, commonpath, normpath
 from tempfile import TemporaryDirectory
 
 from setuptools.command.build_clib import build_clib as _build_clib
@@ -46,6 +46,25 @@ COMMON_OPTIONS = [
 COMMON_BOOLEAN_OPTIONS = [
     "drakon", "thin"
 ]
+
+
+def expand_sources(sources):
+    """Expand source glob patterns, with `**` matching any depth.
+
+    Duplicates are dropped, keeping first-seen order. Recursive `**` also matches the
+    glob root, so the customary `["src/*.c", "src/**/*.c"]` pairing reports every
+    top-level source twice, and compiling one source into the same object twice makes
+    the link fail with duplicate symbols.
+    """
+    expanded = []
+    seen = set()
+    for src in sources:
+        for path in glob(src, recursive=True):
+            key = normpath(path)
+            if key not in seen:
+                seen.add(key)
+                expanded.append(path)
+    return expanded
 
 
 class ClangCCompiler(UnixCCompiler):
@@ -300,9 +319,7 @@ class ClangBuildExt(_build_ext):
     def build_extension(self, ext):
         sources = ext.sources
         try:
-            ext.sources = []
-            for src in sources:
-                ext.sources.extend(glob(src))
+            ext.sources = expand_sources(sources)
             super().build_extension(ext)
         finally:
             ext.sources = sources
@@ -398,12 +415,9 @@ class ClangBuildClib(_build_clib):
         for lib_name, build_info in libraries:
             sources = build_info.get("sources")
             if sources:
-                new_sources = []
-                for src in sources:
-                    new_sources.extend(glob(src))
                 # Only "sources" is glob-expanded: everything else in build_info
                 # (macros, include_dirs, cflags, obj_deps) must be passed through
-                build_info = dict(build_info, sources=new_sources)
+                build_info = dict(build_info, sources=expand_sources(sources))
             new_libraries.append((lib_name, build_info))
 
         super().build_libraries(new_libraries)

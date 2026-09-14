@@ -71,16 +71,37 @@ The compiler uses the full LLVM toolchain:
 ### Glob Pattern Expansion
 
 Source file lists in both extensions and libraries support shell glob patterns. Patterns are
-expanded at build time, so you don't need to enumerate every source file in `setup.py`:
+expanded at build time, so you don't need to enumerate every source file in `setup.py`.
+
+`*` matches within a single directory, while `**` recurses to any depth. Given this tree:
+
+```
+src/module/
+├── module.c
+├── util/
+│   └── util.c
+└── codec/
+    └── formats/
+        └── png.c
+```
+
+| Pattern | Matches |
+|---------|---------|
+| `src/module/*.c` | `module.c` |
+| `src/module/*/*.c` | `util/util.c` |
+| `src/module/**/*.c` | `module.c`, `util/util.c`, `codec/formats/png.c` |
+
+Use `*` when a flat directory is exactly what you want — it will not silently pick up
+sources added in a subdirectory later:
 
 ```python
 setup(
     ...,
     ext_modules=[
-        Extension("myext", ["src/module/*.c", "src/module/**/*.c"]),
+        Extension("myext", ["src/module/*.c"]),
     ],
     libraries=[
-        ("mylib", {"sources": ["src/lib/*.c", "src/lib/**/*.c"]}),
+        ("mylib", {"sources": ["src/lib/*.c"]}),
     ],
     cmdclass={
         "build_ext": ClangBuildExt,
@@ -88,6 +109,28 @@ setup(
     },
 )
 ```
+
+Use `**` to pick up an entire source tree regardless of how deeply it is nested:
+
+```python
+setup(
+    ...,
+    ext_modules=[
+        Extension("myext", ["src/module/**/*.c"]),
+    ],
+    libraries=[
+        ("mylib", {"sources": ["src/lib/**/*.c"]}),
+    ],
+    cmdclass={
+        "build_ext": ClangBuildExt,
+        "build_clib": ClangBuildClib,
+    },
+)
+```
+
+`**/*.c` already covers the top level, so pairing it with `*.c` is unnecessary. Should you
+list overlapping patterns anyway, each source is compiled once: duplicates are removed,
+keeping the order in which they were first matched.
 
 Only the `sources` entry is glob-expanded. Every other `build_info` key of a `build_clib`
 library (`macros`, `include_dirs`, `cflags`, `obj_deps`) is passed through to setuptools
