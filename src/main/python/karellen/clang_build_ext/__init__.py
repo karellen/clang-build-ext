@@ -28,7 +28,9 @@ from distutils.spawn import find_executable
 from distutils.unixccompiler import UnixCCompiler
 from distutils.util import split_quoted
 from glob import glob
-from os.path import exists, dirname, commonpath, normpath
+from importlib.metadata import PackageNotFoundError, distribution
+from os.path import exists, dirname, commonpath, normpath, join, relpath
+from sysconfig import get_path
 from tempfile import TemporaryDirectory
 
 from setuptools.command.build_clib import build_clib as _build_clib
@@ -46,6 +48,19 @@ COMMON_OPTIONS = [
 COMMON_BOOLEAN_OPTIONS = [
     "drakon", "thin"
 ]
+
+# The distribution shipping the LLVM shared libraries, and the runtime whose location
+# within it anchors the search for their directory.
+LLVM_CORE_DISTRIBUTION = "karellen-llvm-core"
+LLVM_CORE_RUNTIME = "libc++.so.1"
+
+# The loader's token for "the directory this object was loaded from". ld.so accepts it
+# either bare or braced, and braced is the deliberate choice: PyBuilder's
+# `filter_resources` runs `string.Template.safe_substitute` over this module on its way
+# into the distribution, and rewrites the bare form into exactly this one. Spelling it
+# braced here keeps the shipped file byte-identical to the one the tests exercise --
+# which is also why no bare form appears anywhere above, comments included.
+ORIGIN = "${ORIGIN}"
 
 
 def expand_sources(sources):
@@ -67,6 +82,48 @@ def expand_sources(sources):
     return expanded
 
 
+def llvm_core_lib_dirs():
+    """Directories holding the LLVM shared libraries, when LLVM lives in this environment.
+
+    An empty result means a system toolchain will be used. Its C++ runtime is already on
+    the loader's default search path, so linking against it needs no help from us.
+    """
+    try:
+        dist = distribution(LLVM_CORE_DISTRIBUTION)
+    except PackageNotFoundError:
+        return []
+
+    for file in dist.files or ():
+        if file.name == LLVM_CORE_RUNTIME:
+            # `locate_file` returns the RECORD's site-packages-relative path uncollapsed.
+            # Keep the collapsing lexical: resolving symlinks here would rewrite a `lib64`
+            # environment as `lib` and leave the path incomparable to `platlib` below.
+            runtime_dir = dirname(normpath(str(dist.locate_file(file))))
+            # Mirrors the RUNPATH karellen-llvm records in its own binaries: the plain
+            # library directory first, then the per-target one.
+            return [dirname(runtime_dir), runtime_dir]
+
+    return []
+
+
+def origin_relative(dirs, base_dir):
+    """Rewrite absolute `dirs` as loader-origin-relative, as seen from `base_dir`."""
+    return [join(ORIGIN, relpath(lib_dir, base_dir)) for lib_dir in dirs]
+
+
+def ext_runtime_library_dirs(ext_name):
+    """RUNPATH entries letting an installed extension find an in-environment LLVM.
+
+    An extension is linked in the build tree but has to resolve its runtime from wherever
+    it ends up installed, so the offset is measured from the directory the extension's
+    package occupies under `platlib`. That offset is a property of the environment layout
+    rather than of this particular environment, which is what makes it safe to bake into
+    a wheel: any environment holding the same LLVM satisfies it.
+    """
+    install_dir = join(get_path("platlib"), *ext_name.split(".")[:-1])
+    return origin_relative(llvm_core_lib_dirs(), install_dir)
+
+
 class ClangCCompiler(UnixCCompiler):
     executables = {
         'preprocessor': ["clang", "-E"],
@@ -82,6 +139,18 @@ class ClangCCompiler(UnixCCompiler):
         'ranlib': None,
         'objcopy': ["llvm-objcopy"],
         'readelf': ["llvm-readelf"]
+    }
+
+    # Flags that have to outlive `configure_system`, which rebuilds every one of the
+    # commands above from sysconfig strings (`LDSHARED='gcc -shared'`) and so keeps only
+    # the program name. Scoped to the linkers on purpose: `archiver` carries an operation
+    # code rather than a flag, and re-adding the declared one on top of sysconfig's would
+    # leave `llvm-ar` reading the second as the archive name.
+    required_flags = {
+        'linker_so': ["-fuse-ld=lld"],
+        'linker_so_cxx': ["-fuse-ld=lld"],
+        'linker_exe': ["-fuse-ld=lld"],
+        'linker_exe_cxx': ["-fuse-ld=lld"]
     }
 
     def __init__(self, verbose=0, dry_run=0, force=0, drakon=False, thin=False):
@@ -218,6 +287,10 @@ class ClangCCompiler(UnixCCompiler):
             if default_executable:
                 value[0] = default_executable[0]
 
+        missing = [flag for flag in self.required_flags.get(key, ()) if flag not in value]
+        if missing:
+            value = value + missing
+
         if self.thin and key == "archiver":
             value = value[:]
             value.append("--thin")
@@ -318,11 +391,14 @@ class ClangBuildExt(_build_ext):
 
     def build_extension(self, ext):
         sources = ext.sources
+        runtime_library_dirs = ext.runtime_library_dirs
         try:
             ext.sources = expand_sources(sources)
+            ext.runtime_library_dirs = runtime_library_dirs + ext_runtime_library_dirs(ext.name)
             super().build_extension(ext)
         finally:
             ext.sources = sources
+            ext.runtime_library_dirs = runtime_library_dirs
 
     def new_compiler(self, plat=None, compiler=None, verbose=0, dry_run=0, force=0):
         if compiler == "clang":
