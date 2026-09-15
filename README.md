@@ -66,6 +66,12 @@ The compiler uses the full LLVM toolchain:
 | Objcopy      | `llvm-objcopy`                   |
 | Readelf      | `llvm-readelf`                   |
 
+`lld` is required, not merely preferred. Python's own build configuration supplies the
+linker command (`LDSHARED`, typically `gcc -shared`), and the plugin substitutes the
+toolchain's driver into it while re-applying `-fuse-ld=lld`, so every link goes through
+lld regardless of what the interpreter was built with — the same assumption already made
+for `llvm-ar`.
+
 ## Features
 
 ### Glob Pattern Expansion
@@ -163,11 +169,41 @@ setup(
 )
 ```
 
-Note that `clang++` links against `libc++` rather than `libstdc++`. When the toolchain comes
-from `karellen-llvm-clang`, `libc++.so.1` lives in the package's library directory and is
-recorded as a plain `DT_NEEDED`, so the resulting extension needs that directory on the
-loader path (`LD_LIBRARY_PATH`, an `ld.so.conf` entry, or an explicit `-Wl,-rpath` in
-`extra_link_args`) at import time.
+### Toolchain Location and `RUNPATH`
+
+The two supported toolchains resolve their runtime libraries differently, and the build
+adapts to whichever one is in use.
+
+A **system LLVM/Clang** keeps its libraries where the dynamic loader already looks, so
+nothing extra is required and nothing extra is emitted. Extensions link directly against
+the host's C++ runtime, which on most distributions is `libstdc++` — distribution builds
+of Clang are generally configured to prefer it.
+
+An **in-environment LLVM/Clang**, installed through `karellen-llvm-clang`, defaults to
+`libc++` and ships its libraries inside the Python environment — `libc++.so.1` and
+`libc++abi.so.1` and `libunwind.so.1` land in
+`<prefix>/lib/<target-triple>/`, which is on no default search path. Extensions built
+against it would record a bare `DT_NEEDED` and fail at import with:
+
+```
+ImportError: libc++.so.1: cannot open shared object file: No such file or directory
+```
+
+To prevent that, `clang-build-ext` detects `karellen-llvm-core` in the current environment
+and records an origin-relative `RUNPATH` on every extension it links:
+
+```
+${ORIGIN}/../../../lib:${ORIGIN}/../../../lib/x86_64-unknown-linux-gnu
+```
+
+This mirrors the `RUNPATH` `karellen-llvm` records in its own binaries. Because the offset
+is measured from the extension's install directory to the environment prefix, it holds in
+any environment with the same layout, so a wheel built this way imports without
+`LD_LIBRARY_PATH` wherever `karellen-llvm-clang` is installed alongside it.
+
+Detection is on the distribution, not on `PATH`: if `karellen-llvm-core` is absent from the
+environment, the build is treated as a system-toolchain build and the link line is left
+alone. Any `runtime_library_dirs` you set on an `Extension` are preserved and come first.
 
 ### Drakon Enhancements
 
