@@ -13,8 +13,10 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-from os import environ
+from os import environ, makedirs
+from os.path import dirname
 from pybuilder.core import (use_plugin, init, Author, task, depends, dependents)
+from pybuilder.errors import BuildFailedException
 
 use_plugin("python.install_dependencies")
 use_plugin("python.core")
@@ -59,6 +61,31 @@ def install_ci_dependencies(project):
     pass
 
 
+@task(description="Generate the distribution metadata in $dir_dist")
+@depends("package")
+@dependents("run_integration_tests")
+def generate_dist_metadata(project, logger, reactor):
+    """Give $dir_dist the metadata of an installed distribution.
+
+    The integration tests put $dir_dist on PYTHONPATH and build sample extensions
+    against what they find there. Part of what this plugin contributes is a
+    `setuptools.finalize_distribution_options` entry point, and setuptools reads entry
+    points from distribution metadata, not from the import path -- so without this the
+    tests would exercise a plugin that is only half present.
+    """
+    dist_dir = project.expand_path("$dir_dist")
+    logger.info("Generating distribution metadata in %s", dist_dir)
+
+    out_file = project.expand_path("$dir_reports", "distutils", "egg_info")
+    makedirs(dirname(out_file), exist_ok=True)
+
+    python_env = reactor.pybuilder_venv
+    if python_env.execute_command(python_env.executable + ["setup.py", "egg_info"],
+                                  outfile_name=out_file, error_file_name=out_file,
+                                  cwd=dist_dir):
+        raise BuildFailedException("Failed to generate distribution metadata, see %s", out_file)
+
+
 @init
 def set_properties(project):
     project.set_property("coverage_break_build", False)
@@ -80,7 +107,10 @@ def set_properties(project):
                                                       "compile"])
 
     project.set_property("distutils_entry_points", {
-        "distutils.commands": ["build_ext = karellen.clang_build_ext:ClangBuildExt"]
+        "distutils.commands": ["build_ext = karellen.clang_build_ext:ClangBuildExt"],
+        "setuptools.finalize_distribution_options": [
+            "llvm_core_pin = karellen.clang_build_ext:finalize_distribution_options"
+        ]
     })
 
     project.set_property("distutils_classifiers", [
