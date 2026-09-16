@@ -205,6 +205,30 @@ Detection is on the distribution, not on `PATH`: if `karellen-llvm-core` is abse
 environment, the build is treated as a system-toolchain build and the link line is left
 alone. Any `runtime_library_dirs` you set on an `Extension` are preserved and come first.
 
+### Pinning the LLVM Runtime
+
+A `RUNPATH` is only a path. Whichever `karellen-llvm-core` is installed where it points
+supplies the C++ runtime at import time, and that has to be the one the extensions were
+compiled and linked against — an upgrade or downgrade of LLVM in the environment otherwise
+repoints a built extension at a different runtime with nothing in the metadata to object.
+
+So alongside the `RUNPATH`, and under exactly the same condition, the package being built
+gains a dependency on the LLVM it was built against:
+
+```
+Requires-Dist: karellen-llvm-core>=23.1.1.post6,<24
+```
+
+The floor is the installed version as it stands. A `.postN` in it is not packaging
+bookkeeping — it counts commits after the release tag, so two posts of one release are two
+different compilers. The ceiling is the next major version. Nothing is added to a package
+built against a system toolchain.
+
+The dependency is contributed through a `setuptools.finalize_distribution_options` entry
+point, so it appears both in the wheel and in the metadata a front end prepares ahead of
+building, which is what pip resolves against. Dependencies you declare yourself, in
+`setup.py` or in `[project]`, are untouched.
+
 ### Drakon Enhancements
 
 Drakon mode embeds LLVM intermediate representation (IR) bytecode into compiled binaries as

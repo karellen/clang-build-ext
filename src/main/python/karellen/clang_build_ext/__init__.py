@@ -124,6 +124,81 @@ def ext_runtime_library_dirs(ext_name):
     return origin_relative(llvm_core_lib_dirs(), install_dir)
 
 
+def llvm_core_requirement():
+    """Dependency pinning a package to the LLVM its extensions were linked against.
+
+    `None` when there is nothing to pin to, under exactly the condition that suppresses
+    the RUNPATH: the two go together, because a RUNPATH is only a path. Whatever LLVM
+    happens to sit at the end of it in the installed environment supplies the C++
+    runtime, and it has to be the one the extensions were compiled and linked against.
+
+    The floor is the installed version verbatim. A `.postN` in it is not packaging
+    bookkeeping -- it counts commits after the release tag, so two posts of one release
+    are two different compilers, and an extension is linked against exactly one of them.
+    The ceiling is the next major, which is why neither form of `~=` works here:
+    `~=23.1.0` means `>=23.1.0, ==23.1.*` and excludes 23.2, while `~=23.1` means
+    `==23.*` and drops the floor.
+    """
+    if not llvm_core_lib_dirs():
+        return None
+
+    version = distribution(LLVM_CORE_DISTRIBUTION).version
+    return f"{LLVM_CORE_DISTRIBUTION}>={version},<{int(version.split('.')[0]) + 1}"
+
+
+def pin_llvm_core(dist):
+    """Record the pin on a distribution whose extensions this plugin is going to build.
+
+    Scoped to distributions that have extensions and hand them to `ClangBuildExt`, since
+    the `distutils.commands` entry point makes this plugin's `build_ext` the default for
+    everything built in the environment, most of which has no extensions at all.
+    """
+    if not dist.ext_modules:
+        return
+
+    build_ext = dist.cmdclass.get("build_ext") or dist.get_command_class("build_ext")
+    if not (isinstance(build_ext, type) and issubclass(build_ext, ClangBuildExt)):
+        return
+
+    requirement = llvm_core_requirement()
+    if not requirement:
+        return
+
+    install_requires = list(dist.install_requires or [])
+    if requirement in install_requires:
+        return
+
+    install_requires.append(requirement)
+    # `_finalize_requires` copies the requirements onto the metadata, and PKG-INFO -- the
+    # file that becomes the wheel's METADATA -- is written from that copy. Both are
+    # assigned rather than one of them appended to: the two are the same list object only
+    # by accident of which setuptools is in play.
+    dist.install_requires = install_requires
+    dist.metadata.install_requires = install_requires
+
+
+def finalize_distribution_options(dist):
+    """setuptools hook, invoked for every distribution built in this environment.
+
+    The pin is deferred to after `parse_config_files` instead of being applied here.
+    Hooks in this group run from `Distribution.__init__`, before `setup.cfg` and
+    `pyproject.toml` have been read, and a `[project] dependencies` table replaces
+    `install_requires` wholesale when it is read.
+
+    Deferring also puts the pin on both routes into a wheel. `build_wheel` reaches it
+    through `bdist_wheel`, but a front end that asks for metadata first -- as pip does,
+    to resolve dependencies -- gets there through `dist_info`, which builds nothing and
+    so never runs a command of ours.
+    """
+    parse_config_files = dist.parse_config_files
+
+    def parse_config_files_and_pin(*args, **kwargs):
+        parse_config_files(*args, **kwargs)
+        pin_llvm_core(dist)
+
+    dist.parse_config_files = parse_config_files_and_pin
+
+
 class ClangCCompiler(UnixCCompiler):
     executables = {
         'preprocessor': ["clang", "-E"],

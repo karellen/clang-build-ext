@@ -20,6 +20,8 @@ import shutil
 import subprocess
 import sys
 import unittest
+import zipfile
+from email import message_from_string
 from glob import glob
 from importlib.metadata import PackageNotFoundError
 from os.path import dirname, join as jp, exists, isdir, normpath
@@ -27,9 +29,15 @@ from tempfile import TemporaryDirectory
 from sysconfig import get_platform, get_path
 from unittest import mock
 
-from karellen.clang_build_ext import (LLVM_CORE_DISTRIBUTION, LLVM_CORE_RUNTIME, ORIGIN,
-                                      ext_runtime_library_dirs, llvm_core_lib_dirs,
-                                      origin_relative)
+from packaging.requirements import Requirement
+from setuptools import Extension
+from setuptools.command.build_ext import build_ext as _build_ext
+from setuptools.dist import Distribution
+
+from karellen.clang_build_ext import (ClangBuildExt, LLVM_CORE_DISTRIBUTION,
+                                      LLVM_CORE_RUNTIME, ORIGIN, ext_runtime_library_dirs,
+                                      llvm_core_lib_dirs, llvm_core_requirement,
+                                      origin_relative, pin_llvm_core)
 
 PLATFORM = f"{get_platform()}-cpython-{sys.version_info[0]}{sys.version_info[1]}"
 
@@ -75,13 +83,16 @@ class ClangBuildExtTest(unittest.TestCase):
     def build_temp(self):
         return jp(self.src_dir, "build", f"temp.{PLATFORM}")
 
-    def build_test(self, dir_name, setup_cfg=None, **env):
+    def copy_fixture(self, dir_name, setup_cfg=None):
         src_dir = jp(self.test_dir, dir_name)
         shutil.copytree(src_dir, self.src_dir, symlinks=True, ignore_dangling_symlinks=True)
 
         if setup_cfg:
             with open(jp(self.src_dir, "setup.cfg"), "w") as f:
                 f.write(setup_cfg)
+
+    def build_test(self, dir_name, setup_cfg=None, **env):
+        self.copy_fixture(dir_name, setup_cfg)
 
         cmd = [sys.executable, "-m", "build", "--wheel", "--no-isolation"]
 
@@ -218,6 +229,55 @@ class ClangBuildExtTest(unittest.TestCase):
             self.fail(f"pip {' '.join(args)} failed:\n"
                       f"stdout: {result.stdout}\nstderr: {result.stderr}")
 
+    def built_wheel(self):
+        wheels = glob(jp(self.src_dir, "dist", "*.whl"))
+        self.assertEqual(1, len(wheels), f"expected exactly one wheel, got {wheels}")
+        return wheels[0]
+
+    def wheel_metadata(self):
+        with zipfile.ZipFile(self.built_wheel()) as wheel:
+            name = next(n for n in wheel.namelist() if n.endswith(".dist-info/METADATA"))
+            return message_from_string(wheel.read(name).decode())
+
+    def prepared_metadata(self):
+        """The metadata a front end reads before anything has been built.
+
+        pip resolves dependencies out of this and then hands the same directory back to
+        `build_wheel`, which copies it into the wheel rather than regenerating it. A pin
+        that only appeared once an extension had been linked would therefore be invisible
+        to the resolver and missing from the wheel pip goes on to install.
+        """
+        out_dir = jp(self.target_dir.name, "metadata")
+        os.makedirs(out_dir)
+
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import sys\n"
+             "from setuptools.build_meta import prepare_metadata_for_build_wheel\n"
+             "prepare_metadata_for_build_wheel(sys.argv[1])\n",
+             out_dir],
+            cwd=self.src_dir, capture_output=True, text=True)
+        if result.returncode != 0:
+            self.fail(f"Preparing metadata failed:\n"
+                      f"stdout: {result.stdout}\nstderr: {result.stderr}")
+
+        dist_infos = glob(jp(out_dir, "*.dist-info"))
+        self.assertEqual(1, len(dist_infos), f"expected one dist-info, got {dist_infos}")
+        with open(jp(dist_infos[0], "METADATA")) as metadata:
+            return message_from_string(metadata.read())
+
+    def assert_pins_llvm_core(self, metadata):
+        """The package must require the LLVM whose runtime its extensions resolve to.
+
+        Compared as a parsed requirement: setuptools reorders the clauses of a specifier
+        on its way into the metadata, and the order is not the point.
+        """
+        requirements = [Requirement(req) for req in metadata.get_all("Requires-Dist") or ()]
+        pins = [req for req in requirements if req.name == LLVM_CORE_DISTRIBUTION]
+        self.assertEqual(1, len(pins), f"expected one {LLVM_CORE_DISTRIBUTION} requirement "
+                                       f"among {[str(req) for req in requirements]}")
+        self.assertEqual(Requirement(llvm_core_requirement()).specifier, pins[0].specifier)
+
     def assert_wheel_installs_and_imports(self, ext_name, expected):
         """The wheel's real contract: install it, import it, with nothing to lean on.
 
@@ -232,12 +292,9 @@ class ClangBuildExtTest(unittest.TestCase):
         RUNPATH cannot resolve by construction. Here the environment is stripped, so
         only the RUNPATH can satisfy the import.
         """
-        wheels = glob(jp(self.src_dir, "dist", "*.whl"))
-        self.assertEqual(1, len(wheels), f"expected exactly one wheel, got {wheels}")
-
         env = {k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"}
 
-        self.pip("install", "--no-index", "--no-deps", "--force-reinstall", wheels[0])
+        self.pip("install", "--no-index", "--no-deps", "--force-reinstall", self.built_wheel())
         try:
             result = subprocess.run([sys.executable, "-c",
                                      f"import {ext_name}; print({ext_name}.test())"],
@@ -275,6 +332,16 @@ class ClangBuildExtTest(unittest.TestCase):
     def test_runpath_recorded_for_c_extension(self):
         self.build_test("extension_1")
         self.assert_llvm_runpath("test")
+
+    @unittest.skipUnless(LLVM_IN_ENV, "LLVM is not installed in this environment")
+    def test_wheel_requires_the_llvm_it_was_built_against(self):
+        self.build_test("extension_1")
+        self.assert_pins_llvm_core(self.wheel_metadata())
+
+    @unittest.skipUnless(LLVM_IN_ENV, "LLVM is not installed in this environment")
+    def test_prepared_metadata_requires_the_llvm_it_was_built_against(self):
+        self.copy_fixture("extension_1")
+        self.assert_pins_llvm_core(self.prepared_metadata())
 
     def test_with_setup_cfg_drakon(self):
         self.build_test("extension_1", setup_cfg="[build_ext]\ndrakon = 1\n")
@@ -376,6 +443,77 @@ class LlvmRunpathTest(unittest.TestCase):
         for shallow, deep in zip(top_level, nested):
             # Two package directories deeper, so two more levels to climb back out of.
             self.assertEqual(jp(ORIGIN, "..", "..", shallow[len(ORIGIN) + 1:]), deep)
+
+
+class LlvmCorePinTest(unittest.TestCase):
+    """The dependency a package declares on the LLVM sitting behind its RUNPATH.
+
+    Exercised against a real `Distribution`, because what is under test is where the
+    requirement has to land for setuptools to write it out, and a stub would agree with
+    whatever this module happened to assign.
+    """
+
+    @staticmethod
+    def installed_llvm_core(version):
+        """Stand-in for the installed distribution, the runtime among its files."""
+        files = [mock.Mock(), mock.Mock()]
+        files[0].name = "libLLVM.so.23.1"
+        files[1].name = LLVM_CORE_RUNTIME
+
+        dist = mock.Mock()
+        dist.version = version
+        dist.files = files
+        dist.locate_file = lambda file: f"/opt/env/lib/x86_64-unknown-linux-gnu/{file.name}"
+        return dist
+
+    @staticmethod
+    def distribution(**attrs):
+        attrs.setdefault("name", "ext")
+        attrs.setdefault("version", "1.0.0")
+        attrs.setdefault("ext_modules", [Extension("one", ["one.c"]),
+                                         Extension("two", ["two.c"])])
+        attrs.setdefault("cmdclass", {"build_ext": ClangBuildExt})
+        attrs.setdefault("install_requires", ["certifi", "idna"])
+        return Distribution(attrs)
+
+    def pin(self, dist, version="23.1.0.post10"):
+        with mock.patch("karellen.clang_build_ext.distribution",
+                        return_value=self.installed_llvm_core(version)):
+            pin_llvm_core(dist)
+
+    def test_requirement_floors_at_the_installed_version_and_stops_below_the_next_major(self):
+        """A `.postN` counts commits of compiler source, so it belongs in the floor."""
+        for version in ("23.1.0.post10", "23.1.0"):
+            with mock.patch("karellen.clang_build_ext.distribution",
+                            return_value=self.installed_llvm_core(version)):
+                self.assertEqual(f"{LLVM_CORE_DISTRIBUTION}>={version},<24",
+                                 llvm_core_requirement())
+
+    def test_no_requirement_when_llvm_is_not_in_the_environment(self):
+        with mock.patch("karellen.clang_build_ext.distribution",
+                        side_effect=PackageNotFoundError(LLVM_CORE_DISTRIBUTION)):
+            self.assertIsNone(llvm_core_requirement())
+
+    def test_pin_joins_the_declared_requirements_and_is_applied_once(self):
+        dist = self.distribution()
+        self.pin(dist)
+        self.pin(dist)
+
+        expected = ["certifi", "idna", f"{LLVM_CORE_DISTRIBUTION}>=23.1.0.post10,<24"]
+        self.assertEqual(expected, dist.install_requires)
+        # PKG-INFO -- and so the wheel's METADATA -- is written from the metadata copy,
+        # which by this point is a separate object from the list above.
+        self.assertEqual(expected, dist.metadata.install_requires)
+
+    def test_no_pin_for_a_distribution_without_extensions(self):
+        dist = self.distribution(ext_modules=[])
+        self.pin(dist)
+        self.assertEqual(["certifi", "idna"], dist.install_requires)
+
+    def test_no_pin_when_the_extensions_are_built_by_something_else(self):
+        dist = self.distribution(cmdclass={"build_ext": _build_ext})
+        self.pin(dist)
+        self.assertEqual(["certifi", "idna"], dist.install_requires)
 
 
 if __name__ == "__main__":
